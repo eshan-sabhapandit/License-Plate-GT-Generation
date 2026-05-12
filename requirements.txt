@@ -1,0 +1,12 @@
+# License plate / video utilities (license_plate_detection.py, car_detection.py, video_utils.py)
+numpy>=1.23
+opencv-python>=4.8
+matplotlib>=3.7
+
+# Local YOLOv8 ONNX
+ultralytics>=8.0
+onnxruntime>=1.16
+onnx>=1.14
+
+# FastOCR
+fast-plate-ocr[onnx]

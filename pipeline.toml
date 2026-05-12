@@ -1,0 +1,27 @@
+video = "05/13.mp4"
+videos_subdir = "videos"
+
+[[cameras]]
+id = "192-168-100-22"
+zone = [100, 450, 500, 270]
+
+[[cameras]]
+id = "192-168-100-32"
+zone = [100, 400, 500, 320]
+
+[vehicle_detection]
+threshold = 10000
+history = 1000
+var_threshold = 50
+
+[license_plate_detection]
+model_path = "lp_lux_yolov8_mask_640.onnx"
+yolo_task = "segment"
+top_candidates_count = 10
+half_window_sec = 5.0
+
+[ocr]
+model_variant = "cct-s-v2-global-model"
+
+[logging]
+log_dir = "logs"
