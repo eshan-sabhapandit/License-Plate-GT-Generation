@@ -5,3 +5,4 @@
 /videos
 /license_plate_gt_generation.egg-info
 .DS_Store
+*.onnx
