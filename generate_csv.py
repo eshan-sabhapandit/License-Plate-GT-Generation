@@ -1,6 +1,6 @@
 """
 Parse pipeline log files and emit one CSV with columns:
-Video name, Camera ID, Timestamp, Detected, Plate.
+Date, Time, Camera ID, Timestamp, Plate Detected, License Plate, Comments.
 """
 
 from __future__ import annotations
@@ -19,35 +19,36 @@ _LOG_LINE = re.compile(
 # Video name: … INFO Video name: 05/13.mp4
 _VIDEO = re.compile(r"^Video name:\s*(.+?)\s*$")
 
-# Stage 1 — MM:SS exit time per detection index
+# Stage 1 — timestamp_mm_ss[int] = MM:SS
 _STAGE1_MMSS_A = re.compile(
-    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+1\s+[-—]\s+timestamp_mm_ss\[(?P<idx>\d+)\]\s*=\s*(?P<val>.+?)\s*$",
+    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+1\s+[-—]\s+timestamp_mm_ss\[(?P<key>\d+)\]\s*=\s*(?P<val>.+?)\s*$",
     re.I,
 )
-_STAGE1_MMSS_B = re.compile(
-    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+1\s+[-—]\s+Timestamp\[(?P<idx>\d+)\]\s*=\s*(?P<val>.+?)\s*$",
+# Stage 1 — Timestamp[key] = … (key may be MM:SS or numeric index; value may be MM:SS or "47.800 s")
+_STAGE1_TIMESTAMP = re.compile(
+    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+1\s+[-—]\s+Timestamp\[(?P<key>[^\]]+)\]\s*=\s*(?P<val>.+?)\s*$",
     re.I,
 )
 
-# Stage 2 — LP detector saw a plate crop (current run_pipeline format)
+# Stage 2 — Detected[key] = True|False (key is int index or MM:SS)
 _STAGE2_DETECTED = re.compile(
-    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+2\s+[-—]\s+Detected\[(?P<idx>\d+)\]\s*=\s*(?P<val>True|False)\s*$",
+    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+2\s+[-—]\s+Detected\[(?P<key>[^\]]+)\]\s*=\s*(?P<val>True|False)\s*$",
     re.I,
 )
 # Alternate: detection_key=… timestamps_seconds=… license_plate_detected=…
 _STAGE2_LEGACY = re.compile(
-    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+2\s+[-—]\s+detection_key=(?P<idx>\d+)\s+"
+    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+2\s+[-—]\s+detection_key=(?P<key>\d+)\s+"
     r"timestamps_seconds=(?P<secs>[^\s]+)\s+license_plate_detected=(?P<val>True|False)\s*$",
     re.I,
 )
 
-# Stage 3 — OCR plate text
+# Stage 3 — OCR plate text (key int or MM:SS)
 _STAGE3_PLATE_A = re.compile(
-    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+3\s+[-—]\s+plates_by_detection\[(?P<idx>\d+)\]\s*=\s*(?P<val>.*)$",
+    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+3\s+[-—]\s+plates_by_detection\[(?P<key>[^\]]+)\]\s*=\s*(?P<val>.*)$",
     re.I,
 )
 _STAGE3_PLATE_B = re.compile(
-    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+3\s+[-—]\s+Plate\[(?P<idx>\d+)\]\s*=\s*(?P<val>.*)$",
+    r"^\[(?P<cam>[^\]]+)\]\s+Stage\s+3\s+[-—]\s+Plate\[(?P<key>[^\]]+)\]\s*=\s*(?P<val>.*)$",
     re.I,
 )
 
@@ -69,6 +70,16 @@ def _timestamp_sort_key(ts: str) -> tuple[float, str]:
         return (float("inf"), s)
 
 
+def _detection_key_sort(k: str) -> tuple[float, str]:
+    """Sort numeric keys by index, MM:SS keys by video time, else last."""
+    k = str(k).strip()
+    if _MMSS_TS.match(k):
+        return _timestamp_sort_key(k)
+    if k.isdigit():
+        return (float(int(k)), k)
+    return (float("inf"), k)
+
+
 def _log_message(line: str) -> str | None:
     line = line.strip()
     if not line:
@@ -77,11 +88,13 @@ def _log_message(line: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def parse_pipeline_log(log_path: Path) -> tuple[str, dict[str, dict[str, dict[int, object]]]]:
-    """Return ``(video_name, per_camera)`` where ``per_camera[cam_id]['ts'|'det'|'plate'][idx]``."""
+def parse_pipeline_log(log_path: Path) -> tuple[str, dict[str, dict[str, dict[str, object]]]]:
+    """Return ``(video_name, per_camera)`` where ``per_camera[cam_id]['ts'|'det'|'plate'][key]``.
+
+    Detection ``key`` is either a numeric string (``"0"``, ``"1"``) or ``MM:SS`` (``"00:47"``).
+    """
     video_name = ""
-    # cam -> category -> idx -> value
-    buckets: dict[str, dict[str, dict[int, object]]] = defaultdict(
+    buckets: dict[str, dict[str, dict[str, object]]] = defaultdict(
         lambda: defaultdict(dict),
     )
 
@@ -96,32 +109,47 @@ def parse_pipeline_log(log_path: Path) -> tuple[str, dict[str, dict[str, dict[in
             video_name = vm.group(1).strip()
             continue
 
-        for rx in (_STAGE1_MMSS_A, _STAGE1_MMSS_B):
+        m = _STAGE1_MMSS_A.match(msg)
+        if m:
+            cam = m.group("cam")
+            key = m.group("key").strip()
+            val = m.group("val").strip()
+            buckets[cam]["ts"][key] = val
+            continue
+
+        m = _STAGE1_TIMESTAMP.match(msg)
+        if m:
+            cam = m.group("cam")
+            key = m.group("key").strip()
+            val = m.group("val").strip()
+            if _MMSS_TS.match(key):
+                buckets[cam]["ts"][key] = key
+            else:
+                buckets[cam]["ts"][key] = val
+            continue
+
+        m = _STAGE2_DETECTED.match(msg)
+        if m:
+            cam = m.group("cam")
+            key = m.group("key").strip()
+            buckets[cam]["det"][key] = m.group("val").strip().lower() == "true"
+            continue
+
+        m = _STAGE2_LEGACY.match(msg)
+        if m:
+            cam = m.group("cam")
+            key = m.group("key").strip()
+            buckets[cam]["det"][key] = m.group("val").strip().lower() == "true"
+            buckets[cam]["ts_sec"][key] = m.group("secs").strip()
+            continue
+
+        for rx in (_STAGE3_PLATE_A, _STAGE3_PLATE_B):
             m = rx.match(msg)
             if m:
-                cam, idx, val = m.group("cam"), int(m.group("idx")), m.group("val").strip()
-                buckets[cam]["ts"][idx] = val
+                cam = m.group("cam")
+                key = m.group("key").strip()
+                buckets[cam]["plate"][key] = m.group("val").strip()
                 break
-        else:
-            m = _STAGE2_DETECTED.match(msg)
-            if m:
-                cam, idx = m.group("cam"), int(m.group("idx"))
-                buckets[cam]["det"][idx] = m.group("val").strip().lower() == "true"
-                continue
-
-            m = _STAGE2_LEGACY.match(msg)
-            if m:
-                cam, idx = m.group("cam"), int(m.group("idx"))
-                buckets[cam]["det"][idx] = m.group("val").strip().lower() == "true"
-                buckets[cam]["ts_sec"][idx] = m.group("secs").strip()
-                continue
-
-            for rx in (_STAGE3_PLATE_A, _STAGE3_PLATE_B):
-                m = rx.match(msg)
-                if m:
-                    cam, idx = m.group("cam"), int(m.group("idx"))
-                    buckets[cam]["plate"][idx] = m.group("val").strip()
-                    break
 
     return video_name, dict(buckets)
 
@@ -129,34 +157,40 @@ def parse_pipeline_log(log_path: Path) -> tuple[str, dict[str, dict[str, dict[in
 def build_rows(
     video_name: str,
     camera_id: str,
-    cam_data: dict[str, dict[int, object]],
-) -> list[tuple[str, str, str, bool, str]]:
-    """Merge ts / det / plate by detection index for one camera."""
+    cam_data: dict[str, dict[str, object]],
+) -> list[tuple[str, str, str, str, bool, str]]:
+    """Merge ts / det / plate by detection key for one camera."""
     ts_map = cam_data.get("ts", {})
     ts_sec_map = cam_data.get("ts_sec", {})
     det_map = cam_data.get("det", {})
     plate_map = cam_data.get("plate", {})
 
-    indices = sorted(
-        set(ts_map) | set(ts_sec_map) | set(det_map) | set(plate_map),
-        key=int,
-    )
+    keys = {str(k) for k in (set(ts_map) | set(ts_sec_map) | set(det_map) | set(plate_map))}
+    sorted_keys = sorted(keys, key=_detection_key_sort)
 
-    rows: list[tuple[str, str, str, bool, str]] = []
-    for i in indices:
-        if i in ts_map:
-            timestamp = str(ts_map[i])
-        elif i in ts_sec_map:
-            timestamp = str(ts_sec_map[i])
+    rows: list[tuple[str, str, str, str, bool, str]] = []
+    for k in sorted_keys:
+        if k in ts_map:
+            timestamp = str(ts_map[k])
+        elif k in ts_sec_map:
+            timestamp = str(ts_sec_map[k])
+        elif _MMSS_TS.match(k):
+            timestamp = k
         else:
             timestamp = ""
 
-        detected = bool(det_map[i]) if i in det_map else False
-        plate = str(plate_map.get(i, ""))
+        detected = bool(det_map[k]) if k in det_map else False
+        plate = str(plate_map.get(k, ""))
 
-        date = video_name.split('/')[-2]
-        time = video_name.split('/')[-1][:-4]
-        rows.append((date, time, camera_id, timestamp, detected, plate))
+        parts = Path(video_name.replace("\\", "/")).as_posix().split("/")
+        if len(parts) >= 2:
+            date_part = parts[-2]
+            time_part = Path(parts[-1]).stem
+        else:
+            date_part = ""
+            time_part = Path(video_name).stem
+
+        rows.append((date_part, time_part, camera_id, timestamp, detected, plate))
 
     return rows
 
@@ -200,9 +234,9 @@ def write_pipeline_csv(
 
     with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["Date", "Time", "Camera ID", "Timestamp", "Detected", "License Plate"])
+        w.writerow(["Date", "Time", "Camera ID", "Timestamp", "Plate Detected", "License Plate", "Comments"])
         for d, t, cid, ts, det, plate in all_rows:
-            w.writerow([d, t, cid, ts, "True" if det else "False", plate])
+            w.writerow([d, t, cid, ts, "True" if det else "False", plate, ""])
 
     return out
 
@@ -215,7 +249,6 @@ def main() -> None:
         "log_file",
         type=Path,
         nargs="?",
-        default=Path("logs/05_13_20260511_163511.log"),
         help="Path to pipeline .log file",
     )
     parser.add_argument(

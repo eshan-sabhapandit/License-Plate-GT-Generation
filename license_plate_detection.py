@@ -77,7 +77,7 @@ def bbox_crop_from_prediction(img_bgr: np.ndarray, pred: dict[str, Any]) -> np.n
     return img_bgr[y1:y2, x1:x2].copy()
 
 
-def ultralytics_to_roboflow_dict(r) -> dict:
+def ultralytics_to_dict(r) -> dict:
     predictions = []
     if r.boxes is None or len(r.boxes) == 0:
         return {"predictions": predictions}
@@ -106,10 +106,10 @@ class SavedWindowPrediction:
     """One saved crop annotated with a single detection."""
 
     path: Path
-    license_plate_path: Path
     detected_at_sec: float
     confidence: float
     inference: dict
+    license_plate_path: Path | None = None
 
 
 @dataclass
@@ -142,23 +142,28 @@ def center_crop_square(frame_bgr: np.ndarray, size: int = 640) -> np.ndarray:
 
 def infer_video_at_timestamps(
     video_path: str | Path,
-    timestamps_detection_exit: dict[int, float],
+    timestamps_detection_exit: dict[str, float],
     model: YOLO,
     output_dir: str | Path,
     *,
-    half_window_sec: float = 5,
+    conf: float = 0.2,
+    window_begin: float = 5,
+    window_end: float = 5,
     onnx_fixed_batch_size: int = 8,
-    top_candidates_count: int = 3,
+    top_candidates_count: int = 5,
+    anchor_fallback_frames: int = 3,
 ) -> List[VideoTimestampInferResult]:
-    """For each anchor time ``t``, use ``[t - half_window_sec, t + half_window_sec]``.
+    """For each anchor time ``t``, use ``[t - window_begin, t + window_end]``.
 
     Runs inference on frames in that interval in chunks of ``onnx_fixed_batch_size``
     (distinct consecutive frames; the last chunk may be padded for fixed-batch ONNX),
     collects all box predictions,
     keeps the top ``top_candidates_count`` boxes by confidence, saves one annotated
     crop per box under ``output_dir``, and saves the bbox crop of each box under
-    ``output_dir/license_plates/`` with the same filename. Windows with no detections
-    yield ``saves=[]``.
+    ``output_dir/license_plates/`` with the same filename. If the model finds no
+    boxes in the window, saves **three** center crops under ``detections/`` only from
+    the frames whose timestamps are closest to the anchor (empty ``predictions``);
+    nothing is written to ``license_plates/`` in that case.
 
     For ONNX models on Apple Silicon, pass ``device='mps'`` (default when ``device`` is
     ``None`` and MPS is available) so ONNX Runtime uses ``CoreMLExecutionProvider``.
@@ -183,18 +188,24 @@ def infer_video_at_timestamps(
         for id in timestamps_detection_exit:
             anchor = timestamps_detection_exit[id]
 
-            # Crete a window of half_window_sec seconds before and after the anchor timestamp
-            window_begin = max(0.0, anchor - half_window_sec)
-            window_end = anchor + half_window_sec
-            cap.set(cv2.CAP_PROP_POS_MSEC, window_begin * 1000.0)
+            # Crete a window of window_begin and window_end seconds before and after the anchor timestamp
+            window_begin_sec = max(0.0, anchor - window_begin)
+            window_end_sec = anchor + window_end
+            cap.set(cv2.CAP_PROP_POS_MSEC, window_begin_sec * 1000.0)
 
             # (confidence, timestamp_sec, crop BGR, single prediction dict)
             candidates: List[Tuple[float, float, np.ndarray, dict[str, Any]]] = []
 
+            # Every frame in the window (timestamp, center crop) for anchor fallback saves.
+            window_snapshots: List[Tuple[float, np.ndarray]] = []
+
             # Distinct frames in the window, inferred in batches of ``onnx_fixed_batch_size``.
             batch_frames: List[Tuple[float, np.ndarray]] = []
 
-            def run_predict_batch(frames: List[Tuple[float, np.ndarray]]) -> None:
+            def run_predict_batch(
+                frames: List[Tuple[float, np.ndarray]],
+                score_threshold: float,
+            ) -> None:
                 if not frames:
                     return
                 times = [t for t, _ in frames]
@@ -213,7 +224,7 @@ def infer_video_at_timestamps(
                 pred_results = model.predict(
                     predict_source,
                     imgsz=640,
-                    conf=0.2,
+                    conf=score_threshold,
                     classes=[0],
                     verbose=False,
                 )
@@ -224,13 +235,13 @@ def infer_video_at_timestamps(
                     r = pred_results[j]
                     pos_sec = times[j]
                     crop_bgr = frames[j][1]
-                    inference_try = ultralytics_to_roboflow_dict(r)
+                    inference_try = ultralytics_to_dict(r)
                     for pred in inference_try.get("predictions") or []:
-                        conf = pred.get("confidence")
-                        if conf is None:
+                        pc = pred.get("confidence")
+                        if pc is None:
                             continue
                         candidates.append(
-                            (float(conf), pos_sec, crop_bgr, pred),
+                            (float(pc), pos_sec, crop_bgr, pred),
                         )
 
             while True:
@@ -239,49 +250,67 @@ def infer_video_at_timestamps(
                     break
 
                 pos_sec = float(cap.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0
-                if pos_sec < window_begin:
+                if pos_sec < window_begin_sec:
                     continue
-                if pos_sec > window_end:
+                if pos_sec > window_end_sec:
                     break
 
-                crop_bgr = center_crop_square(frame_bgr, size=640)
+                crop_bgr = center_crop_square(frame_bgr, size=2000)
+                window_snapshots.append((pos_sec, crop_bgr))
                 batch_frames.append((pos_sec, crop_bgr))
 
                 if onnx_fixed_batch_size <= 1:
-                    run_predict_batch(batch_frames)
+                    run_predict_batch(batch_frames, conf)
                     batch_frames.clear()
                 elif len(batch_frames) >= onnx_fixed_batch_size:
-                    run_predict_batch(batch_frames)
+                    run_predict_batch(batch_frames, conf)
                     batch_frames.clear()
 
             if batch_frames:
-                run_predict_batch(batch_frames)
+                run_predict_batch(batch_frames, conf)
                 batch_frames.clear()
 
             candidates.sort(key=lambda t: t[0], reverse=True)
             top_candidates = candidates[:top_candidates_count]
 
             saves: List[SavedWindowPrediction] = []
-            for rank, (conf, pos_sec, crop_bgr, pred) in enumerate(top_candidates):
-                inference_single = {"predictions": [pred]}
-                sec_det = int(round(pos_sec))
-                out_file = (
-                    out_dir
-                    / detections_dir / f"{id:02d}_{rank:02d}.jpg"
+            if top_candidates:
+                for rank, (det_conf, pos_sec, crop_bgr, pred) in enumerate(top_candidates):
+                    inference_single = {"predictions": [pred]}
+                    out_file = detections_dir / f"{id}_{rank:02d}.jpg"
+                    plate_file = license_plates_dir / out_file.name
+                    save_inference_plot(crop_bgr, inference_single, out_file)
+                    plate_roi = bbox_crop_from_prediction(crop_bgr, pred)
+                    cv2.imwrite(str(plate_file), plate_roi)
+                    saves.append(
+                        SavedWindowPrediction(
+                            path=out_file,
+                            detected_at_sec=pos_sec,
+                            confidence=det_conf,
+                            inference=inference_single,
+                            license_plate_path=plate_file,
+                        ),
+                    )
+            elif window_snapshots and anchor_fallback_frames > 0:
+                ordered = sorted(
+                    window_snapshots,
+                    key=lambda t: (abs(t[0] - anchor), t[0]),
                 )
-                plate_file = license_plates_dir / out_file.name
-                save_inference_plot(crop_bgr, inference_single, out_file)
-                plate_roi = bbox_crop_from_prediction(crop_bgr, pred)
-                cv2.imwrite(str(plate_file), plate_roi)
-                saves.append(
-                    SavedWindowPrediction(
-                        path=out_file,
-                        license_plate_path=plate_file,
-                        detected_at_sec=pos_sec,
-                        confidence=conf,
-                        inference=inference_single,
-                    ),
-                )
+                for rank, (pos_sec, crop_bgr) in enumerate(
+                    ordered[:anchor_fallback_frames],
+                ):
+                    inference_single: dict[str, Any] = {"predictions": []}
+                    out_file = detections_dir / f"{id}_{rank:02d}.jpg"
+                    save_inference_plot(crop_bgr, inference_single, out_file)
+                    saves.append(
+                        SavedWindowPrediction(
+                            path=out_file,
+                            detected_at_sec=pos_sec,
+                            confidence=0.0,
+                            inference=inference_single,
+                            license_plate_path=None,
+                        ),
+                    )
 
             results.append(
                 VideoTimestampInferResult(
@@ -305,13 +334,9 @@ model = YOLO(str(_ONNX_PREPARED), task="detect")
 
 if __name__ == "__main__":
 
-    exit_seconds_by_detection = {0: 149.60014444444445, 1: 154.20015555555557, 2: 1402.8012777777778, 3: 1916.8017, 4: 2128.201866666667}
-     
-    # 5: 2185.2019111111113, 6: 2351.2020333333335, 7: 2822.802355555556, 
-    # 8: 2956.6024333333335, 9: 3150.2025555555556, 10: 3378.802688888889, 
-    # 11: 3458.6027222222224, 12: 3570.202777777778}
+    exit_seconds_by_detection = {'00:47': 47.800000000000004, '13:55': 835.400088888889, '15:33': 933.8000888888889, '15:53': 953.6001, '23:01': 1381.8001000000002, '23:27': 1407.8001000000002, '30:42': 1842.0001111111112, '34:17': 2057.800111111111, '38:13': 2293.0001111111114, '40:39': 2439.8001, '40:57': 2457.4001000000003, '41:46': 2506.0001111111114, '45:16': 2716.800088888889, '52:10': 3130.2001}
     
-    video = "videos/192-168-100-22/05/09.mp4"
+    video = "videos/192-168-100-22/05/13.mp4"
 
 
     start_time = time.time()
@@ -319,18 +344,13 @@ if __name__ == "__main__":
         video,
         exit_seconds_by_detection,
         model,
+        conf=0.2,
         output_dir=f"outputs/yolov8_lp_lux_640_{video.split('/')[-3]}_{video.split('/')[-2]}_{video.split('/')[-1]}_test",
         onnx_fixed_batch_size=_ONNX_BATCH,
         top_candidates_count=5,
-        half_window_sec=5,
+        window_end=7,
+        window_begin=3,
+        anchor_fallback_frames=3,
     )
     end_time = time.time()
     print(f"Time taken: {end_time - start_time} seconds")
-
-    # for r in rows:
-    #     print(
-    #         r.anchor_timestamp_sec,
-    #         [(s.confidence, s.detected_at_sec, s.path) for s in r.saves],
-    #     )
-
-    # display_first_frame_center_crop_subplots("08.mp4", zone=(320, 40, 640, 640))

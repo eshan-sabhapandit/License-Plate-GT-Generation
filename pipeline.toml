@@ -1,4 +1,4 @@
-video = "05/13.mp4"
+video = "06/18.mp4"
 videos_subdir = "videos"
 
 [[cameras]]
@@ -17,8 +17,13 @@ var_threshold = 50
 [license_plate_detection]
 model_path = "lp_lux_yolov8_mask_640.onnx"
 yolo_task = "segment"
-top_candidates_count = 10
+top_candidates_count = 5
+conf = 0.2
+anchor_fallback_frames = 3
 half_window_sec = 5.0
+# Optional overrides (default: window_begin/window_end = half_window_sec)
+window_begin = 3.0
+window_end = 7.0
 
 [ocr]
 model_variant = "cct-s-v2-global-model"

@@ -91,23 +91,15 @@ def detect_motion_timestamps(video_path, zone=(100, 400, 500, 320), threshold=50
     timestamps_mm_ss_exit = timestamps_mm_ss_exit[1:]
     timestamps_seconds_exit = timestamps_seconds_exit[1:]
 
-    # Convert lists to dictionaries where the key is the detection index and the value is the timestamp
-    timestamps_mm_ss_exit_dict = {
-        i: str(t) for i, t in enumerate(timestamps_mm_ss_exit)
-    }
-    timestamps_seconds_exit_dict = {
-        i: float(t) for i, t in enumerate(timestamps_seconds_exit)
-    }
-
-    return (
-        timestamps_seconds_exit_dict,
-        timestamps_mm_ss_exit_dict,
-    )
+    # Convert lists to a dictionary where the key is the MM:SS timestamp and the value is the seconds timestamp
+    timestamps = dict(zip(timestamps_mm_ss_exit, timestamps_seconds_exit))
+    
+    return timestamps
 
 
 if __name__ == "__main__":
 
-    video = "05/09.mp4"
+    video = "05/13.mp4"
 
     # Camera 1: 192.168.100.22
     video_path_1 = f"videos/192-168-100-22/{video}" 
@@ -118,27 +110,25 @@ if __name__ == "__main__":
     gate_zone_2 = (100, 400, 500, 320)
 
     tic = time.time()
-    timestamps_seconds_exit_dict_1, timestamps_mm_ss_exit_dict_1 = detect_motion_timestamps(video_path_1, 
-                                                                        zone=gate_zone_1, 
-                                                                        threshold=10000,
-                                                                        history=1000, 
-                                                                        varThreshold=50)
+    timestamps_1 = detect_motion_timestamps(video_path_1, 
+                                                zone=gate_zone_1, 
+                                                threshold=10000,
+                                                history=1000, 
+                                                varThreshold=50)
 
     print(f"\n-----------------{video}---------------------")    
     print("Camera 1:")
-    print("Number of detections: ", len(timestamps_seconds_exit_dict_1))
-    print("Exit timestamps (MM:SS): ", timestamps_mm_ss_exit_dict_1)
-    print("Exit timestamps (seconds): ", timestamps_seconds_exit_dict_1)
+    print("Number of detections: ", len(timestamps_1))
+    print("Exit timestamps: ", timestamps_1)
 
-    timestamps_seconds_exit_dict_2, timestamps_mm_ss_exit_dict_2 = detect_motion_timestamps(video_path_2, 
-                                                                        zone=gate_zone_2, 
-                                                                        threshold=10000,
-                                                                        history=1000, 
-                                                                        varThreshold=50)
+    timestamps_2 = detect_motion_timestamps(video_path_2, 
+                                                zone=gate_zone_2, 
+                                                threshold=10000,
+                                                history=1000, 
+                                                varThreshold=50)
     print("\nCamera 2:")
-    print("Number of detections: ", len(timestamps_seconds_exit_dict_2))
-    print("Exit timestamps (MM:SS): ", timestamps_mm_ss_exit_dict_2)
-    print("Exit timestamps (seconds): ", timestamps_seconds_exit_dict_2)
+    print("Number of detections: ", len(timestamps_2))
+    print("Exit timestamps: ", timestamps_2)
 
     toc = time.time()
     print(f"\nTime taken: {toc - tic} seconds")

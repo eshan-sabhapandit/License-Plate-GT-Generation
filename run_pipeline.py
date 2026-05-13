@@ -5,7 +5,7 @@ import logging
 import time
 import tomllib
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Hashable, Mapping, Sequence
 
 from onnx_model_utils import prepare_onnx_for_onnxruntime, read_images_input_batch_size
 from ultralytics import YOLO
@@ -48,31 +48,31 @@ def _video_parts(video: str) -> tuple[str, str]:
 
 def _log_stage1_camera(
     camera_id: str,
-    timestamps_mm_ss_exit: Mapping[int, str],
+    exit_timestamps: Mapping[str, float],
     *,
     number_of_detections: int,
 ) -> None:
-    """Log MM:SS exit timestamps per detection key (one row per key) and detection count."""
+    """Log each exit (MM:SS key → seconds) and detection count."""
     logger.info("Camera ID: %s", camera_id)
     logger.info("[%s] Stage 1 — Number of detections: %s", camera_id, number_of_detections)
-    for det_key in sorted(timestamps_mm_ss_exit.keys()):
-        mm_ss = timestamps_mm_ss_exit[det_key]
+    for mm_ss in sorted(exit_timestamps.keys(), key=lambda k: exit_timestamps[k]):
+        sec = exit_timestamps[mm_ss]
         logger.info(
-            "[%s] Stage 1 - Timestamp[%s] = %s",
+            "[%s] Stage 1 - Timestamp[%s] = %.3f s",
             camera_id,
-            det_key,
             mm_ss,
+            sec,
         )
 
 
 def _log_stage2_camera(
     camera_id: str,
-    timestamps_seconds_exit: Mapping[int, float],
+    exit_timestamps: Mapping[str, float],
     results: Sequence[VideoTimestampInferResult],
 ) -> None:
-    """Log each detection key, exit timestamp (seconds), and whether LP crops were found."""
+    """Log each detection key, exit time (seconds), and whether LP crops were found."""
     logger.info("Camera ID: %s", camera_id)
-    for (det_key, ts_sec), r in zip(timestamps_seconds_exit.items(), results, strict=True):
+    for (det_key, ts_sec), r in zip(exit_timestamps.items(), results, strict=True):
         had_detection = bool(r.saves)
         logger.info(
             "[%s] Stage 2 - Detected[%s] = %s",
@@ -82,10 +82,13 @@ def _log_stage2_camera(
         )
 
 
-def _log_stage3_camera(camera_id: str, plates_by_detection: Mapping[int, str]) -> None:
+def _log_stage3_camera(
+    camera_id: str,
+    plates_by_detection: Mapping[Hashable, str],
+) -> None:
     """Log OCR consensus plate string per detection key (one row per key)."""
     logger.info("Camera ID: %s", camera_id)
-    for det_key in sorted(plates_by_detection.keys()):
+    for det_key in plates_by_detection:
         plate_text = plates_by_detection[det_key]
         logger.info(
             "[%s] Stage 3 — Plate[%s] = %s",
@@ -144,7 +147,10 @@ def run_pipeline(config_path: str | Path) -> None:
     yolo_task = lpd.get("yolo_task", "segment")
     top_k = int(lpd.get("top_candidates_count", 5))
     half_win = float(lpd.get("half_window_sec", 5.0))
-
+    window_begin = float(lpd.get("window_begin", half_win))
+    window_end = float(lpd.get("window_end", half_win))
+    lpd_conf = float(lpd.get("conf", 0.2))
+    anchor_fallback_frames = int(lpd.get("anchor_fallback_frames", 3))
     ocr_variant = ocr_cfg.get("model_variant", "cct-s-v2-global-model")
 
     mm_dir, file_stem = _video_parts(video)
@@ -153,34 +159,38 @@ def run_pipeline(config_path: str | Path) -> None:
 
     # Stage 1
     logger.info("Stage 1: Vehicle Detection")
-    stage1: list[
-        tuple[str, dict[int, float], dict[int, str], Path]
-    ] = []
+    stage1: list[tuple[str, dict[str, float], Path]] = []
 
     for cam in cameras_cfg:
         cam_id = cam["id"]
         zone = tuple(int(x) for x in cam["zone"])
         video_path = repo_root / videos_subdir / cam_id / video
-        ts_sec_dict, mm_ss_dict = detect_motion_timestamps(
+        exit_timestamps = detect_motion_timestamps(
             str(video_path),
             zone=zone,
             threshold=vd_threshold,
             history=vd_history,
             varThreshold=vd_var,
         )
-        stage1.append((cam_id, ts_sec_dict, mm_ss_dict, video_path))
+        if isinstance(exit_timestamps, str):
+            raise RuntimeError(
+                f"Vehicle detection failed for {cam_id} ({video_path}): {exit_timestamps}",
+            )
+        stage1.append((cam_id, exit_timestamps, video_path))
 
-    for cam_id, _, mm_ss_dict, _ in stage1:
-        n_det = len(mm_ss_dict)
-        _log_stage1_camera(cam_id, mm_ss_dict, number_of_detections=n_det)
+    for cam_id, exit_ts, _ in stage1:
+        n_det = len(exit_ts)
+        _log_stage1_camera(cam_id, exit_ts, number_of_detections=n_det)
 
     # Stage 2
     logger.info("Stage 2: License Plate Detection")
     model, onnx_batch = load_model(model_rel, task=yolo_task)
 
-    stage2_results: list[tuple[str, dict[int, float], list[VideoTimestampInferResult], Path]] = []
+    stage2_results: list[
+        tuple[str, dict[str, float], list[VideoTimestampInferResult], Path]
+    ] = []
 
-    for cam_id, ts_sec_dict, _, video_path in stage1:
+    for cam_id, exit_ts, video_path in stage1:
         if mm_dir:
             output_dir = repo_root / "outputs" / cam_id / mm_dir / file_stem
         else:
@@ -188,23 +198,26 @@ def run_pipeline(config_path: str | Path) -> None:
 
         results = infer_video_at_timestamps(
             video_path,
-            ts_sec_dict,
+            exit_ts,
             model,
             output_dir=output_dir,
+            conf=lpd_conf,
+            window_begin=window_begin,
+            window_end=window_end,
             onnx_fixed_batch_size=onnx_batch,
             top_candidates_count=top_k,
-            half_window_sec=half_win,
+            anchor_fallback_frames=anchor_fallback_frames,
         )
-        stage2_results.append((cam_id, ts_sec_dict, results, output_dir))
-        _log_stage2_camera(cam_id, ts_sec_dict, results)
+        stage2_results.append((cam_id, exit_ts, results, output_dir))
+        _log_stage2_camera(cam_id, exit_ts, results)
 
     # Stage 3
     logger.info("Stage 3: License Plate Recognition")
 
-    for cam_id, ts_sec_dict, _, output_dir in stage2_results:
+    for cam_id, exit_ts, _, output_dir in stage2_results:
         plates = infer_license_plates_using_OCR(
             output_dir / "license_plates",
-            ts_sec_dict,
+            exit_ts,
             ocr_variant,
         )
         _log_stage3_camera(cam_id, plates)

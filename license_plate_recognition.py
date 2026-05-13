@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import re
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Hashable
 
 from fast_plate_ocr import LicensePlateRecognizer
 
 _IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"})
-
-# Filenames like ``00_01.jpg``: detection id before ``_``, variant index after.
-_STEM_RE = re.compile(r"^(\d+)_(\d+)$")
 
 
 def _is_image_path(path: Path) -> bool:
@@ -31,12 +28,22 @@ def list_plate_images(folder: str | Path, *, recursive: bool = False) -> list[Pa
     return sorted(paths, key=lambda p: p.as_posix().lower())
 
 
+def _stem_to_key_and_variant(stem: str) -> tuple[str, int] | None:
+    """Parse ``{detection_key}_{variant}`` with variant the last ``_`` segment (digits only)."""
+    if "_" not in stem:
+        return None
+    prefix, suffix = stem.rsplit("_", 1)
+    if not prefix or not suffix.isdigit():
+        return None
+    return prefix, int(suffix)
+
+
 def _group_license_plate_images_by_detection(
     folder: str | Path,
     *,
     recursive: bool = False,
-) -> dict[int, list[Path]]:
-    """Group ``{det}_{variant}.jpg`` crops under ``folder`` by detection id."""
+) -> dict[str, list[Path]]:
+    """Group crops named ``<key>_<variant>.jpg`` by string key (prefix before last ``_``)."""
     root = Path(folder).expanduser().resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"Not a directory: {root}")
@@ -46,61 +53,70 @@ def _group_license_plate_images_by_detection(
     else:
         candidates = (p for p in root.iterdir() if _is_image_path(p))
 
-    groups: dict[int, list[Path]] = {}
+    groups: dict[str, list[Path]] = {}
     for p in candidates:
-        m = _STEM_RE.match(p.stem)
-        if not m:
+        parsed = _stem_to_key_and_variant(p.stem)
+        if parsed is None:
             continue
-        det_id = int(m.group(1))
-        groups.setdefault(det_id, []).append(p)
+        key_str, _variant = parsed
+        groups.setdefault(key_str, []).append(p)
 
-    for det_id in groups:
-        groups[det_id].sort(
+    for key_str in groups:
+        groups[key_str].sort(
             key=lambda path: (
-                int(_STEM_RE.match(path.stem).group(2)),
+                _stem_to_key_and_variant(path.stem)[1],
                 path.name.lower(),
             ),
         )
     return groups
 
 
-def _majority_plate(strings: list[str]) -> str:
-    """Most frequent OCR string; ties broken lexicographically for stability."""
-    if not strings:
+def _six_char_plate_mode_first_on_tie(strings: list[str]) -> str:
+    """Pick the most frequent 6-char (stripped) OCR string; ties → first in crop order.
+
+    ``strings`` order is variant / reading order. Among strings tied for the highest
+    count, returns the one whose **first qualifying occurrence** appears earliest in
+    that list.
+    """
+    stripped = [s.strip() for s in strings]
+    six_only = [t for t in stripped if len(t) == 6]
+    if not six_only:
         return ""
-    counts = Counter(strings)
-    top_n = max(counts.values())
-    winners = [s for s, n in counts.items() if n == top_n]
-  
-    if len(winners) > 1:
-        return winners[0]
-    else:
-        return min(winners)
+    counts = Counter(six_only)
+    best = max(counts.values())
+    for s in strings:
+        t = s.strip()
+        if len(t) == 6 and counts[t] == best:
+            return t
+    return ""
 
 
 def infer_license_plates_using_OCR(
     folder: str | Path,
-    exit_seconds_by_detection: dict[int, float],
+    exit_seconds_by_detection: dict[Hashable, float],
     model_variant: str,
     *,
     recursive: bool = False,
     return_confidence: bool = False,
-) -> dict[int, str]:
-    """Run OCR on plate crops and pick the majority plate string per detection id.
+) -> dict[Hashable, str]:
+    """Run OCR on plate crops and pick one plate string per detection key.
 
-    Expects crops named ``{{detection_id}}_{{variant}}.jpg`` (e.g. ``00_00.jpg`` … ``00_02.jpg``)
-    under ``folder``. The integer before ``_`` must match keys in
-    ``exit_seconds_by_detection``. All images for one detection are inferred in one batched
-    ``run`` call (together with other groups), then the most common plate text wins.
+    For each key, among OCR strings with **exactly 6 characters** (after strip), the
+    **most common** wins; if several strings tie for that count, the **first** such
+    string in variant order (first crop whose reading is a tied winner) is returned.
 
-    Returns a dict with the same keys as ``exit_seconds_by_detection``; missing image groups
-    map to ``""``.
+    Expects crops under ``folder`` named ``<key>_<variant>.jpg`` where ``<key>`` matches
+    ``str(k)`` for each ``k`` in ``exit_seconds_by_detection`` (e.g. ``0_00.jpg`` or
+    ``02:29_00.jpg``). Variant is a non-negative integer suffix after the last ``_``.
+
+    Returns a dict with the same keys and key order as ``exit_seconds_by_detection``;
+    missing image groups map to ``""``.
     """
     groups = _group_license_plate_images_by_detection(folder, recursive=recursive)
 
-    ordered_keys = sorted(exit_seconds_by_detection.keys())
-    segments: list[tuple[int, list[Path]]] = [
-        (k, groups.get(k, [])) for k in ordered_keys
+    ordered_keys = list(exit_seconds_by_detection.keys())
+    segments: list[tuple[Hashable, list[Path]]] = [
+        (k, groups.get(str(k), [])) for k in ordered_keys
     ]
     all_paths = [p for _, paths in segments for p in paths]
 
@@ -113,14 +129,14 @@ def infer_license_plates_using_OCR(
         return_confidence=return_confidence,
     )
 
-    out: dict[int, str] = {}
+    out: dict[Hashable, str] = {}
     idx = 0
-    for det_id, paths in segments:
+    for det_key, paths in segments:
         n = len(paths)
         chunk = preds[idx : idx + n]
         idx += n
         plates = [pr.plate for pr in chunk]
-        out[det_id] = _majority_plate(plates)
+        out[det_key] = _six_char_plate_mode_first_on_tie(plates)
 
     return out
 
@@ -129,10 +145,10 @@ if __name__ == "__main__":
     model_variant = "cct-s-v2-global-model"
 
     image_folder = (
-        "outputs/192-168-100-22_05/13.mp4/license_plates"
+        "outputs/yolov8_lp_lux_640_192-168-100-22_05_13.mp4_test/license_plates"
     )
 
-    exit_seconds_by_detection = {0: '02:30', 1: '02:35', 2: '23:24', 3: '31:58'}
+    exit_seconds_by_detection = {'00:47': 47.800000000000004, '13:55': 835.400088888889, '15:33': 933.8000888888889, '15:53': 953.6001, '23:01': 1381.8001000000002, '23:27': 1407.8001000000002, '30:42': 1842.0001111111112, '34:17': 2057.800111111111, '38:13': 2293.0001111111114, '40:39': 2439.8001, '40:57': 2457.4001000000003, '41:46': 2506.0001111111114, '45:16': 2716.800088888889, '52:10': 3130.2001}
 
     start_time = time.time()
     plates_by_detection = infer_license_plates_using_OCR(
@@ -144,5 +160,5 @@ if __name__ == "__main__":
 
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Number of detections: {len(plates_by_detection)}")
-    for det_id, text in sorted(plates_by_detection.items()):
+    for det_id, text in plates_by_detection.items():
         print(f"{det_id}: {text}")
