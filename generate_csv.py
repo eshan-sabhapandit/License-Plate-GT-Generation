@@ -1,13 +1,14 @@
 """
-Parse pipeline log files and emit one CSV with columns:
-Date, Time, Camera ID, Timestamp, Plate Detected, License Plate, Comments.
+Parse all pipeline ``*.log`` files under ``<repo>/logs`` and write one CSV per log
+under ``<repo>/csv``, mirroring any subdirectories. Columns: Date, Time, Camera ID,
+Timestamp, Plate Detected, License Plate, Comments.
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -241,39 +242,34 @@ def write_pipeline_csv(
     return out
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Convert pipeline log to a single combined CSV file.",
-    )
-    parser.add_argument(
-        "log_file",
-        type=Path,
-        nargs="?",
-        help="Path to pipeline .log file",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        default=None,
-        dest="output_path",
-        metavar="OUTPUT.csv",
-        help="Output CSV path (default: <log_dir>/<log_stem>.csv)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="Directory for the CSV when -o is not set (default: same folder as the log)",
-    )
-    args = parser.parse_args()
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent
 
-    path = write_pipeline_csv(
-        args.log_file,
-        output_path=args.output_path,
-        output_dir=args.output_dir,
-    )
-    print(path)
+
+def main() -> None:
+    repo = _repo_root()
+    logs_dir = repo / "logs"
+    csv_dir = repo / "csv"
+
+    if not logs_dir.is_dir():
+        print(f"No logs directory at {logs_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    log_files = sorted(logs_dir.rglob("*.log"))
+    if not log_files:
+        print(f"No .log files under {logs_dir}", file=sys.stderr)
+        sys.exit(0)
+
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for log_path in log_files:
+        rel = log_path.relative_to(logs_dir)
+        out_path = (csv_dir / rel).with_suffix(".csv")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        written.append(write_pipeline_csv(log_path, output_path=out_path))
+
+    for p in written:
+        print(p)
 
 
 if __name__ == "__main__":

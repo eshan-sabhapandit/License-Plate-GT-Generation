@@ -7,7 +7,11 @@ import tomllib
 from pathlib import Path
 from typing import Any, Hashable, Mapping, Sequence
 
-from onnx_model_utils import prepare_onnx_for_onnxruntime, read_images_input_batch_size
+from onnx_model_utils import (
+    get_project_root,
+    prepare_onnx_for_onnxruntime,
+    read_images_input_batch_size,
+)
 from ultralytics import YOLO
 
 from license_plate_detection import VideoTimestampInferResult, infer_video_at_timestamps
@@ -28,8 +32,9 @@ def load_pipeline_config(config_path: Path) -> dict[str, Any]:
 
 def load_model(model_path: str, *, task: str = "segment"):
     ######### Ultralytics ONNX (opset 22+ may fail on older ONNX Runtime; see ``prepare_onnx_for_onnxruntime``)
-    _REPO = Path(__file__).resolve().parent
-    _ONNX_PREPARED = prepare_onnx_for_onnxruntime(_REPO / model_path)
+    root = get_project_root()
+    onnx_src = (root / Path(model_path)).expanduser()
+    _ONNX_PREPARED = prepare_onnx_for_onnxruntime(onnx_src)
     _ONNX_BATCH = read_images_input_batch_size(_ONNX_PREPARED)
     logger.info("ONNX Batch Size: %s", _ONNX_BATCH)
     model = YOLO(str(_ONNX_PREPARED), task=task)
@@ -123,7 +128,7 @@ def _setup_logging(repo_root: Path, log_dir_rel: str, video: str) -> Path:
 
 def run_pipeline(config_path: str | Path) -> None:
     """Run vehicle detection → LP detection → OCR using parameters from a TOML config file."""
-    repo_root = Path(__file__).resolve().parent
+    repo_root = get_project_root()
     cfg = load_pipeline_config(Path(config_path))
 
     video = cfg["video"]
@@ -157,7 +162,7 @@ def run_pipeline(config_path: str | Path) -> None:
 
     start_time = time.time()
 
-    # Stage 1
+    ########################### Stage 1: Vehicle Detection ###########################
     logger.info("Stage 1: Vehicle Detection")
     stage1: list[tuple[str, dict[str, float], Path]] = []
 
@@ -182,7 +187,7 @@ def run_pipeline(config_path: str | Path) -> None:
         n_det = len(exit_ts)
         _log_stage1_camera(cam_id, exit_ts, number_of_detections=n_det)
 
-    # Stage 2
+    ########################### Stage 2: License Plate Detection ###########################
     logger.info("Stage 2: License Plate Detection")
     model, onnx_batch = load_model(model_rel, task=yolo_task)
 
@@ -211,7 +216,7 @@ def run_pipeline(config_path: str | Path) -> None:
         stage2_results.append((cam_id, exit_ts, results, output_dir))
         _log_stage2_camera(cam_id, exit_ts, results)
 
-    # Stage 3
+    ########################### Stage 3: License Plate Recognition ###########################
     logger.info("Stage 3: License Plate Recognition")
 
     for cam_id, exit_ts, _, output_dir in stage2_results:
@@ -227,14 +232,14 @@ def run_pipeline(config_path: str | Path) -> None:
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parent
+    repo_root = get_project_root()
     parser = argparse.ArgumentParser(description="License plate GT pipeline (config-driven).")
     parser.add_argument(
         "-c",
         "--config",
         type=Path,
         default=repo_root / "pipeline.toml",
-        help="Path to pipeline TOML config (default: pipeline.toml next to this script)",
+        help="Path to pipeline TOML config (default: pipeline.toml at project root)",
     )
     args = parser.parse_args()
     run_pipeline(args.config)

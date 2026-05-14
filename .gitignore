@@ -1,9 +1,9 @@
 /outputs
-/logs/*.csv
+*.csv
+*.log
 /fast-plate-ocr
-/__pycache__
+*__pycache__
 /videos
-/license_plate_gt_generation.egg-info
+*.egg-info
 .DS_Store
 *.onnx
-/logs

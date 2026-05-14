@@ -11,7 +11,11 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from onnx_model_utils import prepare_onnx_for_onnxruntime, read_images_input_batch_size
+from onnx_model_utils import (
+    get_project_root,
+    prepare_onnx_for_onnxruntime,
+    read_images_input_batch_size,
+)
 from video_utils import read_mp4_video_details, display_first_frame_center_crop_subplots
 
 
@@ -325,7 +329,7 @@ def infer_video_at_timestamps(
 
 
 ######### Ultralytics ONNX (opset 22+ may fail on older ONNX Runtime; see ``prepare_onnx_for_onnxruntime``)
-_REPO = Path(__file__).resolve().parent
+_REPO = get_project_root()
 _ONNX_PREPARED = prepare_onnx_for_onnxruntime(_REPO / "lp_lux_yolov8_mask_640.onnx")
 _ONNX_BATCH = read_images_input_batch_size(_ONNX_PREPARED)
 print("ONNX Batch Size: ", _ONNX_BATCH)

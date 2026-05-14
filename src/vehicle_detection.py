@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 import time
-from video_utils import display_first_frame_center_crop_subplots
 
 BOS_CAM1_ZONE = (100, 450, 500, 270)
 BOS_CAM2_ZONE = (100, 400, 500, 320)

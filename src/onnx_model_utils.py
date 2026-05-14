@@ -10,6 +10,16 @@ import onnx
 DEFAULT_MAX_AI_ONNX_OPSET = 21
 
 
+def get_project_root() -> Path:
+    """Repository root (contains ``videos/``, ``outputs/``, ``pipeline.toml``).
+
+    When the package lives under ``src/`` (editable layout), this is the parent of
+    ``src``. Otherwise it is the directory containing this file.
+    """
+    pkg = Path(__file__).resolve().parent
+    return pkg.parent if pkg.name == "src" else pkg
+
+
 def read_images_input_batch_size(onnx_path: str | Path) -> int:
     """Return the batch dimension of input ``images`` if fixed; else ``1``."""
     path = Path(onnx_path).expanduser().resolve()
