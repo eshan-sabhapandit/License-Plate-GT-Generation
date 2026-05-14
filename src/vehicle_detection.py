@@ -98,7 +98,7 @@ def detect_motion_timestamps(video_path, zone=(100, 400, 500, 320), threshold=50
 
 if __name__ == "__main__":
 
-    video = "05/13.mp4"
+    video = "06/18.mp4"
 
     # Camera 1: 192.168.100.22
     video_path_1 = f"videos/192-168-100-22/{video}" 

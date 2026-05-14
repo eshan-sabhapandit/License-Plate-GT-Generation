@@ -220,11 +220,12 @@ def run_pipeline(config_path: str | Path) -> None:
     logger.info("Stage 3: License Plate Recognition")
 
     for cam_id, exit_ts, _, output_dir in stage2_results:
-        plates = infer_license_plates_using_OCR(
-            output_dir / "license_plates",
-            exit_ts,
-            ocr_variant,
-        )
+        # plates = infer_license_plates_using_OCR(
+        #     output_dir / "license_plates",
+        #     exit_ts,
+        #     ocr_variant,
+        # )
+        plates = {key: "" for key in exit_ts}
         _log_stage3_camera(cam_id, plates)
 
     elapsed = time.time() - start_time
