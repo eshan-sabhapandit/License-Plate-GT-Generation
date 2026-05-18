@@ -101,15 +101,15 @@ def detect_motion_timestamps(video_path, zone=(100, 400, 500, 320), threshold=10
 
 if __name__ == "__main__":
 
-    video_1 = "videos/192-168-100-22/07/"
-    video_2 = "videos/192-168-100-32/07/"
+    video_1 = "videos/192-168-100-22/11/"
+    video_2 = "videos/192-168-100-32/11/"
 
     gate_zone_1 = BOS_CAM1_ZONE
     gate_zone_2 = BOS_CAM2_ZONE
 
     # Step 1: Create a json file to store the exit timestamps
-    exit_timestamps_1 = {}
-    exit_timestamps_2 = {}
+    exit_timestamps_11_1 = {}
+    exit_timestamps_11_2 = {}
 
     # Step 2: Run the vehicle detection function on all videos in the directory
     tic = time.time()
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         video_path = os.path.join(video_1, video)
         # Check if video is a mp4 file
         if video.endswith('.mp4'):
-            exit_timestamps_1[video] = detect_motion_timestamps(video_path, gate_zone_1)
+            exit_timestamps_11_1[video] = detect_motion_timestamps(video_path, gate_zone_1)
         else:
             continue
 
@@ -125,15 +125,15 @@ if __name__ == "__main__":
         video_path = os.path.join(video_2, video)
         # Check if video is a mp4 file
         if video.endswith('.mp4'):
-            exit_timestamps_2[video] = detect_motion_timestamps(video_path)
+            exit_timestamps_11_2[video] = detect_motion_timestamps(video_path)
         else:
             continue
 
     # Step 3: Save the exit timestamps to the json file
-    with open('exit_timestamps_1.json', 'w') as f:
-        json.dump(exit_timestamps_1, f)
-    with open('exit_timestamps_2.json', 'w') as f:
-        json.dump(exit_timestamps_2, f)
+    with open('exit_timestamps_11_1.json', 'w') as f:
+        json.dump(exit_timestamps_11_1, f)
+    with open('exit_timestamps_11_2.json', 'w') as f:
+        json.dump(exit_timestamps_11_2, f)
     
     toc = time.time()
     print(f"Time taken: {toc - tic} seconds")
