@@ -1,12 +1,15 @@
 import cv2
 import numpy as np
 import time
+import os
+import json
 
 BOS_CAM1_ZONE = (100, 450, 500, 270)
 BOS_CAM2_ZONE = (100, 400, 500, 320)
 
 
-def detect_motion_timestamps(video_path, zone=(100, 400, 500, 320), threshold=5000, history=500, varThreshold=50):
+
+def detect_motion_timestamps(video_path, zone=(100, 400, 500, 320), threshold=10000, history=1000, varThreshold=50):
     """
     Detects when vehicle enters a specified zone in image and returns list of timestamps. Logic is to use background 
     subtraction to remove the background from the image and then check if the zone is motion.
@@ -98,39 +101,39 @@ def detect_motion_timestamps(video_path, zone=(100, 400, 500, 320), threshold=50
 
 if __name__ == "__main__":
 
-    video = "06/18.mp4"
+    video_1 = "videos/192-168-100-22/07/"
+    video_2 = "videos/192-168-100-32/07/"
 
-    # Camera 1: 192.168.100.22
-    video_path_1 = f"videos/192-168-100-22/{video}" 
-    gate_zone_1 = (100, 450, 500, 270)
+    gate_zone_1 = BOS_CAM1_ZONE
+    gate_zone_2 = BOS_CAM2_ZONE
 
-    # Camera 2: 192.168.100.32
-    video_path_2 = f"videos/192-168-100-32/{video}"
-    gate_zone_2 = (100, 400, 500, 320)
+    # Step 1: Create a json file to store the exit timestamps
+    exit_timestamps_1 = {}
+    exit_timestamps_2 = {}
 
+    # Step 2: Run the vehicle detection function on all videos in the directory
     tic = time.time()
-    timestamps_1 = detect_motion_timestamps(video_path_1, 
-                                                zone=gate_zone_1, 
-                                                threshold=10000,
-                                                history=1000, 
-                                                varThreshold=50)
+    for video in os.listdir(video_1):
+        video_path = os.path.join(video_1, video)
+        # Check if video is a mp4 file
+        if video.endswith('.mp4'):
+            exit_timestamps_1[video] = detect_motion_timestamps(video_path, gate_zone_1)
+        else:
+            continue
 
-    print(f"\n-----------------{video}---------------------")    
-    print("Camera 1:")
-    print("Number of detections: ", len(timestamps_1))
-    print("Exit timestamps: ", timestamps_1)
+    for video in os.listdir(video_2):
+        video_path = os.path.join(video_2, video)
+        # Check if video is a mp4 file
+        if video.endswith('.mp4'):
+            exit_timestamps_2[video] = detect_motion_timestamps(video_path)
+        else:
+            continue
 
-    timestamps_2 = detect_motion_timestamps(video_path_2, 
-                                                zone=gate_zone_2, 
-                                                threshold=10000,
-                                                history=1000, 
-                                                varThreshold=50)
-    print("\nCamera 2:")
-    print("Number of detections: ", len(timestamps_2))
-    print("Exit timestamps: ", timestamps_2)
-
+    # Step 3: Save the exit timestamps to the json file
+    with open('exit_timestamps_1.json', 'w') as f:
+        json.dump(exit_timestamps_1, f)
+    with open('exit_timestamps_2.json', 'w') as f:
+        json.dump(exit_timestamps_2, f)
+    
     toc = time.time()
-    print(f"\nTime taken: {toc - tic} seconds")
-
-    # Tune zone
-    # display_first_frame_center_crop_subplots(video_path_1, zone=gate_zone_1)
+    print(f"Time taken: {toc - tic} seconds")

@@ -1,22 +1,64 @@
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Sequence, Tuple, Union
+import json
+import logging
 
 import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
 
-from onnx_model_utils import (
-    get_project_root,
-    prepare_onnx_for_onnxruntime,
-    read_images_input_batch_size,
-)
-from video_utils import read_mp4_video_details, display_first_frame_center_crop_subplots
+from onnx_model_utils import get_project_root
+
+logger = logging.getLogger(__name__)
+
+
+def _video_name_from_path(video_path: str | Path, camera_id: str) -> str:
+    path = Path(video_path).expanduser().resolve()
+    parts = path.parts
+    if camera_id in parts:
+        return "/".join(parts[parts.index(camera_id) + 1 :])
+    return path.name
+
+
+def _setup_log_file(log_dir: Path, video_name: str) -> Path:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stem = video_name.replace("/", "_").removesuffix(".mp4")
+    log_file = log_dir / f"{stem}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_file, encoding="utf-8"),
+        ],
+        force=True,
+    )
+    return log_file
+
+
+def log_camera_timestamps(
+    camera_id: str,
+    timestamps: dict[str, float],
+) -> None:
+    logger.info("Camera ID: %s", camera_id)
+    for mm_ss in sorted(timestamps.keys(), key=lambda k: timestamps[k]):
+        logger.info(
+            "[%s] Stage 1 - Timestamp[%s] = %.3f s",
+            camera_id,
+            mm_ss,
+            timestamps[mm_ss],
+        )
+
+
+def _parse_exit_timestamps(raw: object) -> dict[str, float]:
+    ts = raw.get("exit_timestamps", raw) if isinstance(raw, dict) else raw
+    return {str(k): float(v) for k, v in ts.items()}
 
 
 def save_inference_plot(
@@ -328,33 +370,99 @@ def infer_video_at_timestamps(
     return results
 
 
-######### Ultralytics ONNX (opset 22+ may fail on older ONNX Runtime; see ``prepare_onnx_for_onnxruntime``)
-_REPO = get_project_root()
-_ONNX_PREPARED = prepare_onnx_for_onnxruntime(_REPO / "lp_lux_yolov8_mask_640.onnx")
-_ONNX_BATCH = read_images_input_batch_size(_ONNX_PREPARED)
-print("ONNX Batch Size: ", _ONNX_BATCH)
-model = YOLO(str(_ONNX_PREPARED), task="detect")
+
+def _run_videos_both_cameras(
+    cam1: str,
+    cam2: str,
+    videos_dir_1: Path,
+    videos_dir_2: Path,
+    output_root_1: Path,
+    output_root_2: Path,
+    exit_timestamps_1: dict,
+    exit_timestamps_2: dict,
+    model: YOLO,
+    log_dir: Path,
+    **infer_kwargs: Any,
+) -> None:
+    """One log file per video; each log includes cam1 and cam2 timestamps."""
+    video_names = sorted(
+        {
+            k
+            for k in (*exit_timestamps_1.keys(), *exit_timestamps_2.keys())
+            if str(k).lower().endswith(".mp4")
+        },
+        key=str.lower,
+    )
+
+    for filename in video_names:
+        path1 = videos_dir_1 / filename
+        path2 = videos_dir_2 / filename
+        if path1.is_file():
+            video_label = _video_name_from_path(path1, cam1)
+        elif path2.is_file():
+            video_label = _video_name_from_path(path2, cam2)
+        else:
+            logger.warning("Skipping %s — file not found for either camera", filename)
+            continue
+
+        _setup_log_file(log_dir, video_label)
+        logger.info("Video name: %s", video_label)
+
+        if filename in exit_timestamps_1 and path1.is_file():
+            ts1 = _parse_exit_timestamps(exit_timestamps_1[filename])
+            log_camera_timestamps(cam1, ts1)
+            infer_video_at_timestamps(
+                path1,
+                ts1,
+                model,
+                output_root_1 / Path(filename).stem,
+                **infer_kwargs,
+            )
+
+        if filename in exit_timestamps_2 and path2.is_file():
+            ts2 = _parse_exit_timestamps(exit_timestamps_2[filename])
+            log_camera_timestamps(cam2, ts2)
+            infer_video_at_timestamps(
+                path2,
+                ts2,
+                model,
+                output_root_2 / Path(filename).stem,
+                **infer_kwargs,
+            )
 
 
 if __name__ == "__main__":
+    repo = get_project_root()
+    log_dir = repo / "logs"
 
-    exit_seconds_by_detection = {'00:47': 47.800000000000004, '13:55': 835.400088888889, '15:33': 933.8000888888889, '15:53': 953.6001, '23:01': 1381.8001000000002, '23:27': 1407.8001000000002, '30:42': 1842.0001111111112, '34:17': 2057.800111111111, '38:13': 2293.0001111111114, '40:39': 2439.8001, '40:57': 2457.4001000000003, '41:46': 2506.0001111111114, '45:16': 2716.800088888889, '52:10': 3130.2001}
-    
-    video = "videos/192-168-100-22/05/13.mp4"
-
-
-    start_time = time.time()
-    rows = infer_video_at_timestamps(
-        video,
-        exit_seconds_by_detection,
-        model,
+    model = YOLO("lp_lux_yolov8_mask_640.onnx", task="segment")
+    infer_kwargs = dict(
         conf=0.2,
-        output_dir=f"outputs/yolov8_lp_lux_640_{video.split('/')[-3]}_{video.split('/')[-2]}_{video.split('/')[-1]}_test",
-        onnx_fixed_batch_size=_ONNX_BATCH,
-        top_candidates_count=5,
-        window_end=7,
         window_begin=3,
+        window_end=7,
+        onnx_fixed_batch_size=8,
+        top_candidates_count=5,
         anchor_fallback_frames=3,
     )
-    end_time = time.time()
-    print(f"Time taken: {end_time - start_time} seconds")
+
+    cam1, cam2 = "192-168-100-22", "192-168-100-32"
+    with open(repo / "exit_timestamps_1.json", encoding="utf-8") as f:
+        exit_timestamps_1 = json.load(f)
+    with open(repo / "exit_timestamps_2.json", encoding="utf-8") as f:
+        exit_timestamps_2 = json.load(f)
+
+    tic = time.time()
+    _run_videos_both_cameras(
+        cam1,
+        cam2,
+        repo / "videos" / cam1 / "07",
+        repo / "videos" / cam2 / "07",
+        repo / "outputs" / cam1 / "07",
+        repo / "outputs" / cam2 / "07",
+        exit_timestamps_1,
+        exit_timestamps_2,
+        model,
+        log_dir,
+        **infer_kwargs,
+    )
+    logger.info("Total time taken: %.3f seconds", time.time() - tic)

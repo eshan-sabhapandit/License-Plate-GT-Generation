@@ -1,13 +1,13 @@
-video = "05/13.mp4"
+video = "05/08.mp4"
 videos_subdir = "videos"
 
 [[cameras]]
 id = "192-168-100-22"
 zone = [100, 450, 500, 270]
 
-[[cameras]]
-id = "192-168-100-32"
-zone = [100, 400, 500, 320]
+#[[cameras]]
+#id = "192-168-100-32"
+#zone = [100, 400, 500, 320]
 
 [vehicle_detection]
 threshold = 10000

@@ -7,16 +7,16 @@ import tomllib
 from pathlib import Path
 from typing import Any, Hashable, Mapping, Sequence
 
-from onnx_model_utils import (
-    get_project_root,
-    prepare_onnx_for_onnxruntime,
-    read_images_input_batch_size,
-)
-from ultralytics import YOLO
 
-from license_plate_detection import VideoTimestampInferResult, infer_video_at_timestamps
-from license_plate_recognition import infer_license_plates_using_OCR
+# from license_plate_detection import VideoTimestampInferResult, infer_video_at_timestamps
+# from license_plate_recognition import infer_license_plates_using_OCR
 from vehicle_detection import detect_motion_timestamps
+
+# from onnx_model_utils import (
+# get_project_root,
+# prepare_onnx_for_onnxruntime,
+# read_images_input_batch_size,
+# )
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ def load_model(model_path: str, *, task: str = "segment"):
     _ONNX_PREPARED = prepare_onnx_for_onnxruntime(onnx_src)
     _ONNX_BATCH = read_images_input_batch_size(_ONNX_PREPARED)
     logger.info("ONNX Batch Size: %s", _ONNX_BATCH)
-    model = YOLO(str(_ONNX_PREPARED), task=task)
-
+    # model = YOLO(str(_ONNX_PREPARED), task=task)
+    model = YOLO(model_path, task=task)
     return model, _ONNX_BATCH
 
 
@@ -103,8 +103,8 @@ def _log_stage3_camera(
         )
 
 
-def _setup_logging(repo_root: Path, log_dir_rel: str, video: str) -> Path:
-    log_dir = (repo_root / log_dir_rel).resolve()
+def _setup_logging(log_dir_rel: str, video: str) -> Path:
+    log_dir = (log_dir_rel).resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
 
     mm_dir, stem = _video_parts(video)
@@ -128,7 +128,6 @@ def _setup_logging(repo_root: Path, log_dir_rel: str, video: str) -> Path:
 
 def run_pipeline(config_path: str | Path) -> None:
     """Run vehicle detection → LP detection → OCR using parameters from a TOML config file."""
-    repo_root = get_project_root()
     cfg = load_pipeline_config(Path(config_path))
 
     video = cfg["video"]
@@ -142,7 +141,7 @@ def run_pipeline(config_path: str | Path) -> None:
 
     videos_subdir = cfg.get("videos_subdir", "videos")
 
-    _setup_logging(repo_root, log_cfg.get("log_dir", "logs"), video)
+    _setup_logging(log_cfg.get("log_dir", "logs"), video)
 
     vd_threshold = int(vd.get("threshold", 10000))
     vd_history = int(vd.get("history", 1000))
@@ -169,7 +168,8 @@ def run_pipeline(config_path: str | Path) -> None:
     for cam in cameras_cfg:
         cam_id = cam["id"]
         zone = tuple(int(x) for x in cam["zone"])
-        video_path = repo_root / videos_subdir / cam_id / video
+        video_path = videos_subdir / cam_id / video
+        tic = time.time()
         exit_timestamps = detect_motion_timestamps(
             str(video_path),
             zone=zone,
@@ -177,17 +177,21 @@ def run_pipeline(config_path: str | Path) -> None:
             history=vd_history,
             varThreshold=vd_var,
         )
+        toc = time.time()
+        logger.info("Time taken: %.3f seconds", toc - tic)
         if isinstance(exit_timestamps, str):
             raise RuntimeError(
                 f"Vehicle detection failed for {cam_id} ({video_path}): {exit_timestamps}",
             )
         stage1.append((cam_id, exit_timestamps, video_path))
-
+            
     for cam_id, exit_ts, _ in stage1:
         n_det = len(exit_ts)
         _log_stage1_camera(cam_id, exit_ts, number_of_detections=n_det)
 
+
     ########################### Stage 2: License Plate Detection ###########################
+    # from ultralytics import YOLO
     logger.info("Stage 2: License Plate Detection")
     model, onnx_batch = load_model(model_rel, task=yolo_task)
 
@@ -233,13 +237,13 @@ def run_pipeline(config_path: str | Path) -> None:
 
 
 def main() -> None:
-    repo_root = get_project_root()
+    # repo_root = get_project_root()
     parser = argparse.ArgumentParser(description="License plate GT pipeline (config-driven).")
     parser.add_argument(
         "-c",
         "--config",
         type=Path,
-        default=repo_root / "pipeline.toml",
+        default="pipeline.toml",
         help="Path to pipeline TOML config (default: pipeline.toml at project root)",
     )
     args = parser.parse_args()
