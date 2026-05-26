@@ -446,19 +446,19 @@ if __name__ == "__main__":
     )
 
     cam1, cam2 = "192-168-100-22", "192-168-100-32"
-    with open(repo / "exit_timestamps_1.json", encoding="utf-8") as f:
+    with open(repo / "exit_timestamps_15_1.json", encoding="utf-8") as f:
         exit_timestamps_1 = json.load(f)
-    with open(repo / "exit_timestamps_2.json", encoding="utf-8") as f:
+    with open(repo / "exit_timestamps_15_2.json", encoding="utf-8") as f:
         exit_timestamps_2 = json.load(f)
 
     tic = time.time()
     _run_videos_both_cameras(
         cam1,
         cam2,
-        repo / "videos" / cam1 / "07",
-        repo / "videos" / cam2 / "07",
-        repo / "outputs" / cam1 / "07",
-        repo / "outputs" / cam2 / "07",
+        repo / "videos" / cam1 / "15",
+        repo / "videos" / cam2 / "15",
+        repo / "outputs" / cam1 / "15",
+        repo / "outputs" / cam2 / "15",
         exit_timestamps_1,
         exit_timestamps_2,
         model,

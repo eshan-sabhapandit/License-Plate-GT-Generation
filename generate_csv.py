@@ -235,9 +235,9 @@ def write_pipeline_csv(
 
     with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["Date", "Time", "Camera ID", "Timestamp", "Plate Detected", "License Plate", "Comments"])
+        w.writerow(["Date", "Time", "Camera ID", "Timestamp", "License Plate", "Comments"])
         for d, t, cid, ts, det, plate in all_rows:
-            w.writerow([d, t, cid, ts, "True" if det else "False", plate, ""])
+            w.writerow([d, t, cid, ts, plate, ""])
 
     return out
 
